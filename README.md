@@ -24,10 +24,13 @@ il suffit d'effectuer la commande suivante :
 <i>Attention le fichier .jar doit se trouver dans le même dossier que le dossier `www/` et le fichier `TEAKeyStoreServer.jks`</i>
 
 La deuxième option est de compiler le code source soi-même en effectuant la commande suivante :
--   `javac .\src\main\java\Server\*.java .\src\main\java\IOHandling\*.java -d out/`<br>
+```
+    javac .\src\main\java\ClientHanding\*.java .\src\main\java\IOHandling\*.java .\src\main\java\Server\*.java .\src\main\java\*.java -d out/ 
+```
+<br>
 
 Puis exécuter les classes compilées grace à la commande :
--   `java -classpath .\out\ Server.Main` <br>
+-   `java -classpath .\out\ Main` <br>
     <i>Attention le dossier out/ doit se trouver dans le même dossier que le dossier `www/` et le fichier `TEAKeyStoreServer.jks`</i>
 
 

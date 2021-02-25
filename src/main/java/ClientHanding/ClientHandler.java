@@ -1,4 +1,4 @@
-package Server;
+package ClientHanding;
 
 import IOHandling.FileHandler;
 import IOHandling.InputHandler;
@@ -9,7 +9,12 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.Socket;
+import java.net.URLDecoder;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.StringTokenizer;
 
 public class ClientHandler implements Runnable {
@@ -17,6 +22,8 @@ public class ClientHandler implements Runnable {
     private final String ThreadName;
     private final SSLSocket client;
     private final String wwwPath;
+
+    private final Socket unsecuredClient;
 
     private String clientQuery;
 
@@ -28,17 +35,25 @@ public class ClientHandler implements Runnable {
      * @param client The socket generated at each connection of a client.
      * @param wwwPath the path to the 'www' folder, used to open files that are into that folder.
      */
-    ClientHandler(SSLSocket client, String wwwPath) {
+    public ClientHandler(SSLSocket client, String wwwPath) {
         this.client = client;
+        this.unsecuredClient = null;
         ThreadName = "Generic_Client";
         this.wwwPath = wwwPath;
+    }
+
+    public ClientHandler(Socket client, String wwwPath) {
+        this.unsecuredClient = client;
+        this.client = null;
+        this.wwwPath = wwwPath;
+        ThreadName = "Unsecured_Client";
     }
 
     /**
      * This method creates a thread for each client, this allows multiple clients to connect and use their
      * own run() method.
      */
-    void start() {
+    public void start() {
         System.out.println("Accepting client...");
         System.out.println("Creating Thread...");
         new Thread(this, ThreadName).start();
@@ -51,11 +66,18 @@ public class ClientHandler implements Runnable {
     public void run() {
         try {
             // Once the thread is created, we start the handshake.
-            this.client.startHandshake();
-
-            // Create the Input and Output.
-            in = new InputHandler(this.client.getInputStream());
-            out = new OutputHandler(this.client.getOutputStream());
+            // If the server is not a secured server we redirect the client to the secured url.
+            if (this.client != null) {
+                // Create the Input and Output.
+                this.client.startHandshake();
+                in = new InputHandler(this.client.getInputStream());
+                out = new OutputHandler(this.client.getOutputStream());
+            } else {
+                assert this.unsecuredClient != null;
+                in = new InputHandler(this.unsecuredClient.getInputStream());
+                out = new OutputHandler(this.unsecuredClient.getOutputStream());
+                RedirectToHTTPS();
+            }
 
             // And read the first line of the request.
             String startLine = in.readNextLine();
@@ -108,7 +130,7 @@ public class ClientHandler implements Runnable {
             // in HTML form.
             System.out.println("CGI Ping detected.");
             String ping = doSomePinging();
-            WriteToClient("200 OK", "text/html", ping.getBytes());
+            WriteToClient("200 OK", "text/html", ping.getBytes(), null);
 
         } else {
             System.out.println("Searching for file : " + wwwPath+path.substring(1));
@@ -130,12 +152,22 @@ public class ClientHandler implements Runnable {
                         "<p style=\"text-align: center\">It appears that you may be lost</p>\n" +
                         "</body>\n" +
                         "</html>";
-                WriteToClient("404 NOT FOUND", "text/html", NOT_FOUND.getBytes());
+                WriteToClient("404 NOT FOUND", "text/html", NOT_FOUND.getBytes(), null);
             } else {
                 System.out.println("File found, reading file.");
-                WriteToClient("200 OK", Files.probeContentType(file.toPath()), FileHandler.readFileBytes(file.getPath()));
+                WriteToClient("200 OK", Files.probeContentType(file.toPath()), FileHandler.readFileBytes(file.getPath()), null);
             }
         }
+    }
+
+    /**
+     * Redirects a standard client to the https server.
+     * @throws IOException Can throw an exception
+     */
+    private void RedirectToHTTPS () throws IOException {
+        ArrayList<String> params = new ArrayList<>();
+        params.add("Location: https://localhost");
+        WriteToClient("301 Moved Permanently", null, null, params);
     }
 
     /**
@@ -148,18 +180,30 @@ public class ClientHandler implements Runnable {
     private void POSTRequest (String path) throws IOException {
         System.out.println("POST Request detected.");
         System.out.println("To path : " + path);
-        String data;
+        String data = null;
+        StringBuilder formContents = new StringBuilder();
 
         // If somehow an empty POST request is sent then the response will be empty.
         if (clientQuery.contains("Content-Length: 0")) {
-            data = "No data";
+            formContents = new StringBuilder("No data");
         } else {
             data = clientQuery.substring(clientQuery.lastIndexOf("\n\r")).trim();
+            formContents.append("<ul>");
+            for(String POSTElement : data.split("&")) {
+                String key = POSTElement.split("=")[0];
+                String value = URLDecoder.decode(POSTElement.split("=")[1], StandardCharsets.UTF_8);
+                formContents.append("<li>");
+                formContents.append(key);
+                formContents.append(" : ");
+                formContents.append(value);
+                formContents.append("</li>");
+            }
+            formContents.append("</ul>");
         }
         System.out.println("Data is : " + data);
         String postResponse = "<a href=\"/\">Bring me home</a>\n" +
-                "<p>POST data is : " + data + "</p>";
-        WriteToClient( "200 OK" , "text/html" , postResponse.getBytes());
+                "<p>POST data is : " + formContents + "</p>";
+        WriteToClient( "200 OK" , "text/html" , postResponse.getBytes(), null);
     }
 
     /**
@@ -169,7 +213,7 @@ public class ClientHandler implements Runnable {
      */
     private void INVALIDRequest() throws IOException {
         System.out.println("Invalid request received, sending 400");
-        WriteToClient("400 BAD REQUEST", null, null);
+        WriteToClient("400 BAD REQUEST", null, null, null);
     }
 
     /**
@@ -180,9 +224,10 @@ public class ClientHandler implements Runnable {
      * @param status The status of the response (ex: 200 OK, 404 NOT FOUND, 400 BAD REQUEST, 420 BLAZE IT, etc...)
      * @param MIME The MIME type of the file. (ex: text/html, text/css, image/png, etc...)
      * @param contents The contents of the file as a byte Array.
+     * @param additionnalHeaders can be used to add other headers to the response.
      * @throws IOException Throws an IOException if the OutputWriter encounters an error.
      */
-    private void WriteToClient(String status, String MIME, byte[] contents) throws IOException {
+    private void WriteToClient(String status, String MIME, byte[] contents, ArrayList<String> additionnalHeaders) throws IOException {
         if (MIME != null) System.out.println("Sending contents of MIME type : " + MIME);
 
         out.writeLine("HTTP/1.1 " + status);
@@ -192,6 +237,13 @@ public class ClientHandler implements Runnable {
             out.writeLine("ContentLength: " + contents.length);
             out.writeLine("Connection: close");
         }
+
+        if (additionnalHeaders != null) {
+            for(String header : additionnalHeaders) {
+                out.write(header.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
         out.writeLine();
         if (contents != null) {
             out.write(contents);
@@ -207,7 +259,12 @@ public class ClientHandler implements Runnable {
         System.out.println("Closing current connection");
         out.close();
         in.close();
-        client.close();
+        if (client != null) {
+            client.close();
+        } else {
+            assert unsecuredClient != null;
+            unsecuredClient.close();
+        }
         System.out.println("Connection closed");
     }
 
